@@ -21,9 +21,9 @@ module Qpx
     @@config = {
       base_headers: {content_type: :json, accept_encoding: :gzip, user_agent: :qpx_gem}, #, accept: :json
       trips_url: 'https://www.googleapis.com/qpxExpress/v1/trips/search',
-      mongo_url: ENV['QPX_MONGO_URL'],
-      mongo_db_name: ENV['QPX_MONGO_DB_NAME']
-      google_api_key: ENV['GOOGLE_API_KEY']
+      mongo_url: ENV['MONGO_URL'],
+      mongo_db_name: ENV['QPX_MONGO_DB_NAME'],
+      google_api_key: ENV['GOOGLE_API_KEY'],
       mongo_airports_coll: 'qpx_airports',
       mongo_airlines_coll: 'qpx_airlines',
       mongo_trips_coll: 'qpx_trips',
