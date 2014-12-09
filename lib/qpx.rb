@@ -4,7 +4,6 @@ require 'restclient/components'
 require 'json'
 require 'rack/cache'
 require 'logger'
-require 'nokogiri'
 require 'moped'
 
 module Qpx
@@ -20,23 +19,18 @@ module Qpx
     end
     # Configuration defaults
     @@config = {
-      :server_api_keys => ['AIzaSyAGqlwSGMAOzmruUUQjrGI-O2VjJzWnxoc','AIzaSyBjULg8APtSAe8qVmiMKQbqJBnR5DMkuU8','AIzaSyADFCXgCV-TG3eIX8fA8TmQWdOgckkhz3E','AIzaSyBXSBWXFCik8w_HjGECO7BUsxk1vilyiRE','AIzaSyBBRqrad-v_VIOHijWyVihVJnN1ksZiOZs'] ,
-      :base_headers => {content_type: :json, accept_encoding: :gzip, user_agent: :qpx_gem}, #, accept: :json
-      :trips_url => 'https://www.googleapis.com/qpxExpress/v1/trips/search',
-      :currencies_url => 'http://www.ecb.int/stats/eurofxref/eurofxref-daily.xml',
-      :mongo_url => 'localhost:27017',
-      :mongo_username => nil,
-      :mongo_password => nil,
-      :mongo_db_name => 'grappes_development',
-      :mongo_currencies_coll => 'currencies',
-      :mongo_airports_coll => 'airports',
-      :mongo_airlines_coll => 'airlines',
-      :mongo_travels_coll => 'travels',
-      :mongo_server_apikeys_coll => 'server_apikeys',
-      :airports_filepath => File.expand_path('../../data/airports.dat', __FILE__),
-      :airlines_filepath => File.expand_path('../../data/airlines.dat', __FILE__),
-      :place_availables_mean => 5,
-      :max_solutions => 3
+      base_headers: {content_type: :json, accept_encoding: :gzip, user_agent: :qpx_gem}, #, accept: :json
+      trips_url: 'https://www.googleapis.com/qpxExpress/v1/trips/search',
+      mongo_url: ENV['QPX_MONGO_URL'],
+      mongo_db_name: ENV['QPX_MONGO_DB_NAME']
+      google_api_key: ENV['GOOGLE_API_KEY']
+      mongo_airports_coll: 'qpx_airports',
+      mongo_airlines_coll: 'qpx_airlines',
+      mongo_trips_coll: 'qpx_trips',
+      airports_filepath: File.expand_path('../../data/airports.dat', __FILE__),
+      airlines_filepath: File.expand_path('../../data/airlines.dat', __FILE__),
+      place_availables_mean: 5,
+      max_solutions: 3
     }
 
     def self.config
@@ -51,24 +45,9 @@ module Qpx
       puts "QPX Api Initialized"
     end
 
-
-    ####################################### General Data Loading ####################################
-    def self.loadCurrencies()
-      return if @@config[:mongo_db][@@config[:mongo_currencies_coll]].find.count > 0
-      @@logger.info("ReLoading Central European Bank Euro conversion rates.")
-      response = RestClient.get @@config[:currencies_url]
-      xml = Nokogiri::XML(response.body)
-
-      xml.search('Cube/Cube/Cube').each do |currency|
-        @@config[:mongo_db][@@config[:mongo_currencies_coll]].insert({currency: currency['currency'], rate: currency['rate']})
-        #puts currency['currency'],currency['rate']
-      end
-      @@last_currencies_load_time = Time.new
-    end
-
     def self.loadAirlinesData()
       return if @@config[:mongo_db][@@config[:mongo_airlines_coll]].find.count > 0
-      @@logger.info("ReLoading Airlines Data.")
+      @@logger.info("Reloading airlines data")
       File.open(@@config[:airlines_filepath], "r") do |f|
         f.each_line do |line|
           #id,name,alias,iata_code,icao_code,call_sign,country,active
@@ -89,7 +68,7 @@ module Qpx
 
     def self.loadAirportsData()
       return if @@config[:mongo_db][@@config[:mongo_airports_coll]].find.count > 0
-      @@logger.info("ReLoading Airports Data.")
+      @@logger.info("Reloading airports data")
       File.open(@@config[:airports_filepath], "r") do |f|
         f.each_line do |line|
           #id,name,city,country,iataCode,icao,latitude,longitude,altitude,utc_timezone_offset,daily_save_time,timezone
@@ -113,45 +92,6 @@ module Qpx
       end
     end
 
-    def self.loadServerApiKeys()
-      return if @@config[:mongo_db][@@config[:mongo_server_apikeys_coll]].find.count > 0
-      @@logger.info("ReLoading Server Api Keys")
-      @@config[:server_api_keys].each do |apikey|
-         @@config[:mongo_db][@@config[:mongo_server_apikeys_coll]].insert({
-           key:             apikey,
-           last_call_date:  Time.now.to_date.to_time ,
-           day_api_calls:   0
-         })
-      end
-    end
-
-
-    def self.next_server_api_key()
-      current_date = Time.now.to_date.to_time
-      #Update previous days calls
-      @@config[:mongo_db][@@config[:mongo_server_apikeys_coll]]
-      .find({last_call_date:  {'$lt' => current_date}})
-      .update({'$set' => {last_call_date: current_date, day_api_calls: 0}},{multi: true})
-      # Get an available key
-      next_key = @@config[:mongo_db][@@config[:mongo_server_apikeys_coll]]
-      .find({day_api_calls:  {'$lt' => 50}})
-      .modify({'$set' => {last_call_date: current_date}, '$inc' => {day_api_calls: 1}})
-
-      if next_key.nil? or next_key.empty?
-        @@logger.error("No available Api Keys found")
-        nil
-      else
-        next_key['key']
-      end
-    end
-
-    def self.euro_usd_rate
-      loadCurrencies if (@@last_currencies_load_time.nil? or Time.new - @@last_currencies_load_time > 60*60*24)
-      @@config[:mongo_db][@@config[:mongo_currencies_coll]].find({currency: 'USD'}).to_a[0]['rate'].to_f
-    end
-
-
-
 
     ####################################### Configuration Helpers ####################################
     @valid_config_keys = @@config.keys
@@ -162,9 +102,8 @@ module Qpx
 
       @@config[:mongo_db] = session = Moped::Session.new([@@config[:mongo_url]])
       @@config[:mongo_db].use @@config[:mongo_db_name]
-      #Mongo::Connection.new(@@config[:mongo_host], @@config[:mongo_port]).db(@@config[:mongo_db_name])
       @@config[:mongo_db].login(@@config[:mongo_username], @@config[:mongo_password]) unless @@config[:mongo_username].nil?
-      @@config[:mongo_db][@@config[:mongo_travels_coll]].indexes.create({
+      @@config[:mongo_db][@@config[:mongo_trips_col]].indexes.create({
         start_airport_code:  1,
         end_airport_code:    1,
         price:               1,
@@ -173,34 +112,16 @@ module Qpx
         stopover:            1,
         company:             1 } ,
         { unique: true, dropDups: true, sparse: true })
-      #@@config[:mongo_db].authenticate(@@config[:mongo_username], @@config[:mongo_password]) unless @@config[:mongo_username].nil?
 
       #Load general Data
-      self.loadCurrencies
       self.loadAirlinesData
       self.loadAirportsData
-      self.loadServerApiKeys
       'QPX is Configured and ready !'
     end
 
-    # Configure through yaml file
-    def self.configure_with(path_to_yaml_file)
-      begin
-        config = YAML::load(IO.read(path_to_yaml_file))
-      rescue Errno::ENOENT
-        log(:warning, "YAML configuration file couldn't be found. Using defaults."); return
-      rescue Psych::SyntaxError
-        log(:warning, "YAML configuration file contains invalid syntax. Using defaults."); return
-        configure(config)
-      end
-    end
-
-    #Configure defaults
-    #self.configure
-
 
     ####################################### API Calls ####################################
-    def self.search_trips(departure_code, arrival_code, outbound_date, inbound_date, adults_count,max_price=600)
+    def self.search_trips(departure_code, arrival_code, outbound_date, inbound_date, adults_count, max_price=600)
       json_post_body = %Q!
       {
         "request": {
@@ -229,8 +150,8 @@ module Qpx
             "childCount": 0,
             "seniorCount": 0
           },
-          "maxPrice": "EUR#{max_price}",
-          "saleCountry": "FR",
+          "maxPrice": "USD#{max_price}",
+          "saleCountry": "USA",
           "solutions": #{@@config[:max_solutions]},
           "refundable": false
         }
@@ -240,7 +161,7 @@ module Qpx
       begin
         response = RestClient.post(@@config[:trips_url], json_post_body, {
           params: {
-            key: Qpx::Api.next_server_api_key,
+            key: @@config[:google_api_key],
             fields: 'trips/tripOption(saleTotal,slice(duration,segment))'
           }
         }.merge(@@config[:base_headers]))
@@ -280,11 +201,11 @@ module Qpx
           first_company         = @@config[:mongo_db][@@config[:mongo_airlines_coll]].find({iata_code: firstSegment['flight']['carrier']}).to_a[0]['name']
           city_top_airport      = self.city_top_airport(end_airport_data['city'])
           begin
-            @@config[:mongo_db][@@config[:mongo_travels_coll]].insert({
+            @@config[:mongo_db][@@config[:mongo_trips_coll]].insert({
                       start_city: start_airport_data['city'],
                         end_city: end_airport_data['city'],
                      end_country: end_airport_data['country'],
-                           price: trip['saleTotal'].sub('EUR','').to_f,#(trip['saleTotal'].sub('USD','').to_f/self.euro_usd_rate).round(2),
+                           price: trip['saleTotal'].sub('USD','').to_f,
                places_availables: @@config[:place_availables_mean], # Use a mean
                            about: '', # Description on town
                        departure: Time.parse(firstLeg['departureTime']),
